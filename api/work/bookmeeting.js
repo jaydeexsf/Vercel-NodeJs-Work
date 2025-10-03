@@ -31,9 +31,15 @@ module.exports = async (req, res) => {
       return res.status(500).json({ success: false, error: 'Missing HUBSPOT_PAT env var' });
     }
 
-    // Optional query: limit properties to a subset
+    // Optional query: limit properties to a subset. If not provided, request common fields
     const { properties, meeting, languages } = req.query || {};
-    const propsParam = properties ? `&properties=${encodeURIComponent(properties)}` : '';
+    const defaultProps = [
+      'meeting', 'meeting_name', 'meeting_title', 'meeting_time', 'meeting_date',
+      'languages', 'language', 'language_of_instruction'
+    ];
+    const propsParam = properties
+      ? `&properties=${encodeURIComponent(properties)}`
+      : `&properties=${encodeURIComponent(defaultProps.join(','))}`;
 
     let after = undefined;
     const all = [];
@@ -53,12 +59,18 @@ module.exports = async (req, res) => {
     }
 
     // Map output to highlight likely fields while still returning full properties
-    let items = all.map(o => ({
-      id: o.id,
-      meeting: o.properties && (o.properties.meeting || o.properties.meeting_name || o.properties.meeting_title) || null,
-      languages: o.properties && (o.properties.languages || o.properties.language || o.properties.language_of_instruction) || null,
-      properties: o.properties || {}
-    }));
+    let items = all.map(o => {
+      const props = o.properties || {};
+      const meetingValue = props.meeting || props.meeting_name || props.meeting_title || props.meeting_time || props.meeting_date || null;
+      const languagesValue = props.languages || props.language || props.language_of_instruction || null;
+      return {
+        id: o.id,
+        meeting: meetingValue,
+        languages: languagesValue,
+        properties: props,
+        _debugPropertyKeys: Object.keys(props) // aid diagnosing missing fields
+      };
+    });
 
     // Apply optional filters from query
     const meetingFilter = normalizeString(meeting).toLowerCase();
