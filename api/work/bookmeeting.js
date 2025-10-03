@@ -20,6 +20,27 @@ async function hubspotRequest(path, token) {
   return { ok: r.ok, status: r.status, statusText: r.statusText, data };
 }
 
+async function hubspotCreate(path, token, body) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20000);
+  const r = await fetch(`${HUBSPOT_BASE}${path}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body),
+    signal: controller.signal
+  });
+  clearTimeout(timeout);
+  const text = await r.text();
+  let data;
+  try { data = JSON.parse(text); } catch (e) {
+    return { ok: false, status: r.status, statusText: r.statusText, parseError: true, raw: text };
+  }
+  return { ok: r.ok, status: r.status, statusText: r.statusText, data };
+}
+
 function normalizeString(v) {
   return (v === undefined || v === null) ? '' : String(v).trim();
 }
@@ -31,7 +52,35 @@ module.exports = async (req, res) => {
       return res.status(500).json({ success: false, error: 'Missing HUBSPOT_PAT env var' });
     }
 
-    // Optional query: limit properties to a subset. If not provided, request common fields
+    if (req.method === 'POST') {
+      // Accept meeting and language from query or JSON body
+      let body;
+      try { body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {}); } catch (_) { body = {}; }
+      const meeting = normalizeString((req.query && req.query.meeting) || body.meeting);
+      const language = normalizeString((req.query && (req.query.language || req.query.languages)) || body.language || body.languages);
+
+      if (!meeting && !language) {
+        return res.status(400).json({ success: false, error: 'Provide at least one of: meeting or language' });
+      }
+
+      // Build properties. Use common field names; adjust if your schema differs.
+      const properties = {};
+      if (meeting) properties.meeting = meeting;
+      if (language) {
+        // prefer a languages field if available
+        properties.languages = language;
+      }
+
+      const createResp = await hubspotCreate('/crm/v3/objects/2-50779282', token, { properties });
+      if (!createResp.ok) {
+        return res.status(502).json({ success: false, error: 'HubSpot create failed', meta: { status: createResp.status, statusText: createResp.statusText }, body: createResp.data || createResp.raw });
+      }
+
+      const created = createResp.data || {};
+      return res.status(201).json({ success: true, created: { id: created.id, properties: created.properties || {} } });
+    }
+
+    // GET: list/fetch with optional filters
     const { properties, meeting, languages } = req.query || {};
     const defaultProps = [
       'meeting', 'meeting_name', 'meeting_title', 'meeting_time', 'meeting_date',
@@ -68,7 +117,7 @@ module.exports = async (req, res) => {
         meeting: meetingValue,
         languages: languagesValue,
         properties: props,
-        _debugPropertyKeys: Object.keys(props) // aid diagnosing missing fields
+        _debugPropertyKeys: Object.keys(props)
       };
     });
 
