@@ -20,6 +20,10 @@ async function hubspotRequest(path, token) {
   return { ok: r.ok, status: r.status, statusText: r.statusText, data };
 }
 
+function normalizeString(v) {
+  return (v === undefined || v === null) ? '' : String(v).trim();
+}
+
 module.exports = async (req, res) => {
   try {
     const token = process.env.HUBSPOT_PAT;
@@ -28,7 +32,7 @@ module.exports = async (req, res) => {
     }
 
     // Optional query: limit properties to a subset
-    const { properties } = req.query || {};
+    const { properties, meeting, languages } = req.query || {};
     const propsParam = properties ? `&properties=${encodeURIComponent(properties)}` : '';
 
     let after = undefined;
@@ -49,12 +53,28 @@ module.exports = async (req, res) => {
     }
 
     // Map output to highlight likely fields while still returning full properties
-    const items = all.map(o => ({
+    let items = all.map(o => ({
       id: o.id,
       meeting: o.properties && (o.properties.meeting || o.properties.meeting_name || o.properties.meeting_title) || null,
       languages: o.properties && (o.properties.languages || o.properties.language || o.properties.language_of_instruction) || null,
       properties: o.properties || {}
     }));
+
+    // Apply optional filters from query
+    const meetingFilter = normalizeString(meeting).toLowerCase();
+    const languagesFilterRaw = normalizeString(languages);
+    const languagesList = languagesFilterRaw ? languagesFilterRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+
+    if (meetingFilter) {
+      items = items.filter(it => normalizeString(it.meeting).toLowerCase().includes(meetingFilter));
+    }
+    if (languagesList.length) {
+      items = items.filter(it => {
+        const val = normalizeString(it.languages).toLowerCase();
+        if (!val) return false;
+        return languagesList.some(lang => val.includes(lang.toLowerCase()));
+      });
+    }
 
     res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=3600');
     return res.status(200).json({ success: true, count: items.length, items });
