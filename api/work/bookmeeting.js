@@ -7,35 +7,16 @@ async function hubspotRequest(path, token) {
     method: 'GET',
     headers: {
       Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
     },
-    signal: controller.signal
+    signal: controller.signal,
   });
   clearTimeout(timeout);
   const text = await r.text();
   let data;
-  try { data = JSON.parse(text); } catch (e) {
-    return { ok: false, status: r.status, statusText: r.statusText, parseError: true, raw: text };
-  }
-  return { ok: r.ok, status: r.status, statusText: r.statusText, data };
-}
-
-async function hubspotCreate(path, token, body) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20000);
-  const r = await fetch(`${HUBSPOT_BASE}${path}`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(body),
-    signal: controller.signal
-  });
-  clearTimeout(timeout);
-  const text = await r.text();
-  let data;
-  try { data = JSON.parse(text); } catch (e) {
+  try {
+    data = JSON.parse(text);
+  } catch {
     return { ok: false, status: r.status, statusText: r.statusText, parseError: true, raw: text };
   }
   return { ok: r.ok, status: r.status, statusText: r.statusText, data };
@@ -52,93 +33,47 @@ module.exports = async (req, res) => {
       return res.status(500).json({ success: false, error: 'Missing HUBSPOT_PAT env var' });
     }
 
-    if (req.method === 'POST') {
-      // Accept meeting and language from query or JSON body
-      let body;
-      try { body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {}); } catch (_) { body = {}; }
-      const meeting = normalizeString((req.query && req.query.meeting) || body.meeting);
-      const language = normalizeString((req.query && (req.query.language || req.query.languages)) || body.language || body.languages);
-
-      if (!meeting && !language) {
-        return res.status(400).json({ success: false, error: 'Provide at least one of: meeting or language' });
-      }
-
-      // Build properties. Use common field names; adjust if your schema differs.
-      const properties = {};
-      if (meeting) properties.meeting = meeting;
-      if (language) {
-        // prefer a languages field if available
-        properties.languages = language;
-      }
-
-      const createResp = await hubspotCreate('/crm/v3/objects/2-50779282', token, { properties });
-      if (!createResp.ok) {
-        return res.status(502).json({ success: false, error: 'HubSpot create failed', meta: { status: createResp.status, statusText: createResp.statusText }, body: createResp.data || createResp.raw });
-      }
-
-      const created = createResp.data || {};
-      return res.status(201).json({ success: true, created: { id: created.id, properties: created.properties || {} } });
+    if (req.method !== 'GET') {
+      return res.status(405).json({ success: false, error: 'Only GET supported for this endpoint' });
     }
 
-    // GET: list/fetch with optional filters
-    const { properties, meeting, languages } = req.query || {};
-    const defaultProps = [
-      'meeting', 'meeting_name', 'meeting_title', 'meeting_time', 'meeting_date',
-      'languages', 'language', 'language_of_instruction'
-    ];
-    const propsParam = properties
-      ? `&properties=${encodeURIComponent(properties)}`
-      : `&properties=${encodeURIComponent(defaultProps.join(','))}`;
+    // Optional filters from query (name, organizerUserId, type)
+    const name = normalizeString(req.query.name);
+    const organizerUserId = normalizeString(req.query.organizerUserId);
+    const type = normalizeString(req.query.type);
 
-    let after = undefined;
-    const all = [];
+    const query = new URLSearchParams();
+    if (name) query.append('name', name);
+    if (organizerUserId) query.append('organizerUserId', organizerUserId);
+    if (type) query.append('type', type);
+    query.append('limit', '100');
 
-    for (let i = 0; i < 1000; i++) { // hard cap on pages
-      const cursor = after ? `&after=${encodeURIComponent(after)}` : '';
-      const path = `/crm/v3/objects/2-50779282?limit=100${cursor}${propsParam}`;
-      const resp = await hubspotRequest(path, token);
-      if (!resp.ok) {
-        return res.status(502).json({ success: false, error: 'HubSpot upstream error', meta: { status: resp.status, statusText: resp.statusText }, body: resp.data || resp.raw });
-      }
-      const page = resp.data || {};
-      const results = Array.isArray(page.results) ? page.results : [];
-      all.push(...results);
-      after = page.paging && page.paging.next && page.paging.next.after ? page.paging.next.after : undefined;
-      if (!after) break;
-    }
+    const path = `/scheduler/v3/meetings/meeting-links?${query.toString()}`;
+    const resp = await hubspotRequest(path, token);
 
-    // Map output to highlight likely fields while still returning full properties
-    let items = all.map(o => {
-      const props = o.properties || {};
-      const meetingValue = props.meeting || props.meeting_name || props.meeting_title || props.meeting_time || props.meeting_date || null;
-      const languagesValue = props.languages || props.language || props.language_of_instruction || null;
-      return {
-        id: o.id,
-        meeting: meetingValue,
-        languages: languagesValue,
-        properties: props,
-        _debugPropertyKeys: Object.keys(props)
-      };
-    });
-
-    // Apply optional filters from query
-    const meetingFilter = normalizeString(meeting).toLowerCase();
-    const languagesFilterRaw = normalizeString(languages);
-    const languagesList = languagesFilterRaw ? languagesFilterRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
-
-    if (meetingFilter) {
-      items = items.filter(it => normalizeString(it.meeting).toLowerCase().includes(meetingFilter));
-    }
-    if (languagesList.length) {
-      items = items.filter(it => {
-        const val = normalizeString(it.languages).toLowerCase();
-        if (!val) return false;
-        return languagesList.some(lang => val.includes(lang.toLowerCase()));
+    if (!resp.ok) {
+      return res.status(502).json({
+        success: false,
+        error: 'HubSpot API error',
+        meta: { status: resp.status, statusText: resp.statusText },
+        body: resp.data || resp.raw,
       });
     }
 
+    const items = Array.isArray(resp.data.results) ? resp.data.results : [];
+    const cleaned = items.map(link => ({
+      id: link.id,
+      name: link.name,
+      slug: link.slug,
+      organizerUserId: link.organizerUserId,
+      type: link.type,
+      createdAt: link.createdAt,
+      updatedAt: link.updatedAt,
+      url: `https://meetings.hubspot.com/${link.slug}`,
+    }));
+
     res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=3600');
-    return res.status(200).json({ success: true, count: items.length, items });
+    return res.status(200).json({ success: true, count: cleaned.length, items: cleaned });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }
