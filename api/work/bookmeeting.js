@@ -34,46 +34,87 @@ module.exports = async (req, res) => {
     }
 
     if (req.method !== 'GET') {
-      return res.status(405).json({ success: false, error: 'Only GET supported for this endpoint' });
+      return res.status(405).json({ success: false, error: 'Only GET supported' });
     }
 
-    // Optional filters from query (name, organizerUserId, type)
-    const name = normalizeString(req.query.name);
-    const organizerUserId = normalizeString(req.query.organizerUserId);
-    const type = normalizeString(req.query.type);
+    // Timezone (optional query)
+    const timezone = normalizeString(req.query.timezone) || 'UTC';
 
-    const query = new URLSearchParams();
-    if (name) query.append('name', name);
-    if (organizerUserId) query.append('organizerUserId', organizerUserId);
-    if (type) query.append('type', type);
-    query.append('limit', '100');
-
-    const path = `/scheduler/v3/meetings/meeting-links?${query.toString()}`;
-    const resp = await hubspotRequest(path, token);
-
-    if (!resp.ok) {
+    // Step 1: Get all meeting links
+    const listResp = await hubspotRequest('/scheduler/v3/meetings/meeting-links?limit=50', token);
+    if (!listResp.ok) {
       return res.status(502).json({
         success: false,
-        error: 'HubSpot API error',
-        meta: { status: resp.status, statusText: resp.statusText },
-        body: resp.data || resp.raw,
+        error: 'Failed to fetch meeting links',
+        meta: { status: listResp.status, statusText: listResp.statusText },
+        body: listResp.data || listResp.raw,
       });
     }
 
-    const items = Array.isArray(resp.data.results) ? resp.data.results : [];
-    const cleaned = items.map(link => ({
-      id: link.id,
-      name: link.name,
-      slug: link.slug,
-      organizerUserId: link.organizerUserId,
-      type: link.type,
-      createdAt: link.createdAt,
-      updatedAt: link.updatedAt,
-      url: `https://meetings.hubspot.com/${link.slug}`,
-    }));
+    const links = Array.isArray(listResp.data.results) ? listResp.data.results : [];
+
+    // Step 2: Get all unique organizer user IDs
+    const userIds = [...new Set(links.map(i => i.organizerUserId).filter(Boolean))];
+    const userMap = {};
+
+    for (const id of userIds) {
+      const userResp = await hubspotRequest(`/settings/v3/users/${id}`, token);
+      if (userResp.ok && userResp.data) {
+        const u = userResp.data;
+        userMap[id] = {
+          name: `${u.firstName || ''} ${u.lastName || ''}`.trim(),
+          email: u.email || null,
+        };
+      }
+    }
+
+    // Step 3: Get availability + meeting details for each link
+    const results = [];
+    for (const link of links) {
+      const slug = link.slug;
+      let availability = [];
+      let meetingDetails = {};
+
+      try {
+        const availResp = await hubspotRequest(
+          `/scheduler/v3/meetings/meeting-links/book/availability-page/${encodeURIComponent(slug)}?timezone=${encodeURIComponent(timezone)}`,
+          token
+        );
+
+        if (availResp.ok && availResp.data) {
+          meetingDetails = {
+            title: availResp.data.title || link.name,
+            description: availResp.data.description || null,
+            durationMinutes: availResp.data.durationMinutes || null,
+          };
+          availability = availResp.data.availableTimeslots || [];
+        }
+      } catch (err) {
+        availability = [];
+      }
+
+      results.push({
+        id: link.id,
+        name: link.name,
+        slug: link.slug,
+        organizerUserId: link.organizerUserId,
+        organizerName: userMap[link.organizerUserId]?.name || 'Unknown',
+        organizerEmail: userMap[link.organizerUserId]?.email || null,
+        type: link.type,
+        createdAt: link.createdAt,
+        updatedAt: link.updatedAt,
+        url: `https://meetings.hubspot.com/${link.slug}`,
+        meetingDetails,
+        availableSlots: availability.map(slot => ({
+          start: slot.startTime,
+          end: slot.endTime,
+          timezone: slot.timeZone || timezone,
+        })),
+      });
+    }
 
     res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=3600');
-    return res.status(200).json({ success: true, count: cleaned.length, items: cleaned });
+    return res.status(200).json({ success: true, count: results.length, items: results });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }
