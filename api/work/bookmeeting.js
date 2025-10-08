@@ -52,8 +52,8 @@ module.exports = async (req, res) => {
 
     let items = Array.isArray(resp.data.results) ? resp.data.results : [];
 
-    // Filter out the item with slug "bachot-bashala"
-    items = items.filter(link => link.slug !== 'bachot-bashala');
+    // Filter out the item with name "Meeting Name"
+    items = items.filter(link => link.name !== 'Meeting Name');
 
     return res.status(200).json({ success: true, count: items.length, items });
   } catch (err) {
