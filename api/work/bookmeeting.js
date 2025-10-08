@@ -50,7 +50,11 @@ module.exports = async (req, res) => {
       });
     }
 
-    const items = Array.isArray(resp.data.results) ? resp.data.results : [];
+    let items = Array.isArray(resp.data.results) ? resp.data.results : [];
+
+    // Filter out the item with slug "bachot-bashala"
+    items = items.filter(link => link.slug !== 'bachot-bashala');
+
     return res.status(200).json({ success: true, count: items.length, items });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
