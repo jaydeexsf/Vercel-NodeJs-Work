@@ -1,3 +1,27 @@
+const HUBSPOT_BASE = 'https://api.hubapi.com';
+
+async function hubspotRequest(path, token) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20000);
+  const r = await fetch(`${HUBSPOT_BASE}${path}`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    signal: controller.signal,
+  });
+  clearTimeout(timeout);
+  const text = await r.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return { ok: false, status: r.status, statusText: r.statusText, parseError: true, raw: text };
+  }
+  return { ok: r.ok, status: r.status, statusText: r.statusText, data };
+}
+
 module.exports = async (req, res) => {
   try {
     const token = process.env.HUBSPOT_PAT;
@@ -18,10 +42,14 @@ module.exports = async (req, res) => {
     const resp = await hubspotRequest(path, token);
 
     if (!resp.ok) {
-      return res.status(502).json({ success: false, error: 'HubSpot API error', meta: { status: resp.status, statusText: resp.statusText }, body: resp.data || resp.raw });
+      return res.status(502).json({
+        success: false,
+        error: 'HubSpot API error',
+        meta: { status: resp.status, statusText: resp.statusText },
+        body: resp.data || resp.raw,
+      });
     }
 
-    // Return full items for inspection
     const items = Array.isArray(resp.data.results) ? resp.data.results : [];
     return res.status(200).json({ success: true, count: items.length, items });
   } catch (err) {
