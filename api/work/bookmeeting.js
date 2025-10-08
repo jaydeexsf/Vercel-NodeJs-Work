@@ -52,10 +52,21 @@ module.exports = async (req, res) => {
 
     let items = Array.isArray(resp.data.results) ? resp.data.results : [];
 
-    // Filter out the item with name "Meeting Name"
-    items = items.filter(link => link.name !== 'Meeting Name');
+    // Map to new structure: slug -> name, original name -> meetingName
+    const cleaned = items.map(link => ({
+      id: link.id,
+      name: link.slug,
+      meetingName: link.name,
+      link: `https://meetings.hubspot.com/${link.slug}`,
+      type: link.type,
+      organizerUserId: link.organizerUserId,
+      userIdsOfLinkMembers: link.userIdsOfLinkMembers || [],
+      defaultLink: link.defaultLink,
+      createdAt: link.createdAt,
+      updatedAt: link.updatedAt
+    }));
 
-    return res.status(200).json({ success: true, count: items.length, items });
+    return res.status(200).json({ success: true, count: cleaned.length, items: cleaned });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }
