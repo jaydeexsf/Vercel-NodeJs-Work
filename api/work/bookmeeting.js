@@ -52,6 +52,9 @@ module.exports = async (req, res) => {
 
     let items = Array.isArray(resp.data.results) ? resp.data.results : [];
 
+    // Exclude any items where name contains "bachot"
+items = items.filter(link => link.slug.toLowerCase() !== 'bachot-bashala' && link.name.toLowerCase() !== 'bachot-bashala');
+
     // Map to new structure: slug -> name, original name -> meetingName
     const cleaned = items.map(link => ({
       id: link.id,
