@@ -24,9 +24,9 @@ module.exports = async (req, res) => {
     const inputs = payload.inputs || payload;
     const contactId = payload.contactId || (payload.contact && payload.contact.id) || inputs.contactId || (inputs.contact && inputs.contact.id) || null;
     
-    // Handle multiple email field formats
-    const email = inputs.email || inputs['email:'] || payload.email || (payload.contact && payload.contact.email) || null;
-    if (!contactId && !email) return res.status(400).json({success: false, error: 'Missing contact id or email'});
+    // Handle multiple email field formats - check colon version first
+    const email = inputs['email:'] || inputs.email || payload['email:'] || payload.email || (payload.contact && payload.contact.email) || null;
+    if (!contactId && !email) return res.status(400).json({success: false, error: 'Missing contact id or email', receivedKeys: Object.keys(inputs)});
     
     // Extract age from multiple possible field names
     const age = inputs.age || inputs['Agent age:'] || inputs.agent_age || inputs.agentAge || null;
