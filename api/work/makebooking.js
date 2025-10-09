@@ -23,16 +23,33 @@ module.exports = async (req, res) => {
     const payload = req.body || {};
     const inputs = payload.inputs || payload;
     const contactId = payload.contactId || (payload.contact && payload.contact.id) || inputs.contactId || (inputs.contact && inputs.contact.id) || null;
-    const email = inputs.email || payload.email || (payload.contact && payload.contact.email) || null;
+    
+    // Handle multiple email field formats
+    const email = inputs.email || inputs['email:'] || payload.email || (payload.contact && payload.contact.email) || null;
     if (!contactId && !email) return res.status(400).json({success: false, error: 'Missing contact id or email'});
-    const age = inputs.age || inputs.agent_age || inputs.agentAge || null;
-    const city = inputs.city || inputs.agent_city || inputs.agentCity || null;
-    const allergies = inputs.allergies || inputs.agent_skin_allergies || inputs.agentSkinAllergies || inputs.skin_allergies || null;
+    
+    // Extract age from multiple possible field names
+    const age = inputs.age || inputs['Agent age:'] || inputs.agent_age || inputs.agentAge || null;
+    
+    // Extract city from multiple possible field names
+    const city = inputs.city || inputs['City:'] || inputs.agent_city || inputs.agentCity || null;
+    
+    // Extract allergies from multiple possible field names
+    const allergies = inputs.allergies || inputs['allergies:'] || inputs.agent_skin_allergies || inputs.agentSkinAllergies || inputs.skin_allergies || null;
+    
+    // Build properties object, excluding "Pending" values
     const properties = {};
-    if (age !== null && age !== undefined && String(age).trim() !== '') properties.agent_age = String(age);
-    if (city !== null && city !== undefined && String(city).trim() !== '') properties.agent_city = String(city);
-    if (allergies !== null && allergies !== undefined && String(allergies).trim() !== '') properties.agent_skin_allergies = String(allergies);
-    if (Object.keys(properties).length === 0) return res.status(400).json({success: false, error: 'No properties provided to update'});
+    if (age !== null && age !== undefined && String(age).trim() !== '' && String(age).trim().toLowerCase() !== 'pending') {
+      properties.agent_age = String(age).trim();
+    }
+    if (city !== null && city !== undefined && String(city).trim() !== '' && String(city).trim().toLowerCase() !== 'pending') {
+      properties.agent_city = String(city).trim();
+    }
+    if (allergies !== null && allergies !== undefined && String(allergies).trim() !== '' && String(allergies).trim().toLowerCase() !== 'pending') {
+      properties.agent_skin_allergies = String(allergies).trim();
+    }
+    
+    if (Object.keys(properties).length === 0) return res.status(400).json({success: false, error: 'No valid properties provided to update (all values are empty or pending)'});
     let targetContactId = contactId;
     if (!targetContactId) {
       const searchBody = {filterGroups: [{filters: [{propertyName: 'email', operator: 'EQ', value: email}]}], limit: 1};
