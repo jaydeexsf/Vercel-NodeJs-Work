@@ -24,45 +24,60 @@ module.exports = async (req, res) => {
     const payload = req.body || {};
     const inputs = payload.inputs || payload;
 
-    const email = inputs.email || (payload.contact && payload.contact.email) || null;
-    if (!email) return res.status(400).json({success: false, error: 'Missing email'});
+    // Robust email detection
+    const emailKeys = ['email', 'Email', 'email:', 'Email:'];
+    let email = null;
+    for (const key of emailKeys) {
+      if (inputs[key]) {
+        email = inputs[key];
+        break;
+      }
+    }
+    if (!email && payload.contact && payload.contact.email) email = payload.contact.email;
+    if (!email) return res.status(400).json({success: false, error: 'Missing email', receivedPayload: payload});
 
-    const age = inputs.age || inputs['Agent age'] || inputs.agentAge || null;
-    const city = inputs.city || inputs['City'] || inputs.agentCity || null;
-    const allergies = inputs.allergies || inputs['allergies'] || inputs.agentSkinAllergies || null;
+    // Collect all inputs to map to HubSpot properties
+    const receivedData = {};
+    Object.keys(inputs).forEach(k => {
+      receivedData[k] = inputs[k];
+    });
+    receivedData.contactId = payload.contactId || (payload.contact && payload.contact.id) || null;
 
-    const receivedData = {email, age, city, allergies};
+    // Search contact by email if no contactId
+    let contactId = receivedData.contactId;
+    if (!contactId) {
+      const searchBody = {filterGroups: [{filters: [{propertyName: 'email', operator: 'EQ', value: email}]}], limit: 1};
+      const searchResp = await hubspotRequest('/crm/v3/objects/contacts/search', token, {
+        method: 'POST',
+        body: JSON.stringify(searchBody),
+        headers: {'Content-Type': 'application/json'}
+      });
+      if (!searchResp.ok) return res.status(502).json({success: false, error: 'HubSpot search error', meta: searchResp, receivedPayload: payload});
+      const results = Array.isArray(searchResp.data.results) ? searchResp.data.results : [];
+      if (results.length === 0) return res.status(404).json({success: false, error: 'Contact not found by email', receivedPayload: payload});
+      contactId = results[0].id;
+    }
 
-    // Search for contact in HubSpot
-    const searchBody = {filterGroups: [{filters: [{propertyName: 'email', operator: 'EQ', value: email}]}], limit: 1};
-    const searchResp = await hubspotRequest('/crm/v3/objects/contacts/search', token, {
-      method: 'POST',
-      body: JSON.stringify(searchBody),
-      headers: {'Content-Type': 'application/json'}
+    // Build HubSpot properties object dynamically from inputs
+    const properties = {};
+    Object.keys(inputs).forEach(k => {
+      if (k.toLowerCase().includes('age')) properties.agent_age = String(inputs[k]).trim();
+      else if (k.toLowerCase().includes('city')) properties.agent_city = String(inputs[k]).trim();
+      else if (k.toLowerCase().includes('allergies')) properties.agent_skin_allergies = String(inputs[k]).trim();
     });
 
-    if (!searchResp.ok) return res.status(502).json({success: false, error: 'HubSpot search error', meta: searchResp});
-    const results = Array.isArray(searchResp.data.results) ? searchResp.data.results : [];
-    if (results.length === 0) return res.status(404).json({success: false, error: 'Contact not found by email'});
-
-    const contactId = results[0].id;
-
-    // Build properties object
-    const properties = {};
-    if (age) properties.agent_age = String(age).trim();
-    if (city) properties.agent_city = String(city).trim();
-    if (allergies) properties.agent_skin_allergies = String(allergies).trim();
-
-    // Update contact in HubSpot
+    // Update contact
     const updateResp = await hubspotRequest(`/crm/v3/objects/contacts/${encodeURIComponent(contactId)}`, token, {
       method: 'PATCH',
       body: JSON.stringify({properties}),
       headers: {'Content-Type': 'application/json'}
     });
 
-    if (!updateResp.ok) return res.status(502).json({success: false, error: 'HubSpot update error', meta: updateResp});
-
-    return res.status(200).json({success: true, receivedData, updatedData: updateResp.data});
+    return res.status(200).json({
+      success: true,
+      receivedData,
+      hubspotUpdateResponse: updateResp
+    });
   } catch (err) {
     return res.status(500).json({success: false, error: err.message || String(err)});
   }
